@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Single‑Sphere Binocular Trainer — VR 거리 조절 통합본</title>
+<style>
+  :root{--bg:#0a0f14;--fg:#e7f0ff;--muted:#9fb3c7;--card:#121821}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans KR,Helvetica,Arial,sans-serif}
+  #ui{position:fixed;left:10px;top:10px;background:#121821cc;padding:10px;border-radius:12px;border:1px solid #223449;max-width:980px;z-index:20;max-height:calc(100vh - 20px);overflow:auto}
+  #ui label{display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0}
+  #ui input[type=range]{width:100%}
+  #ui input[type=number]{width:90px}
+  #ui button,#ui select{background:#182536;color:var(--fg);border:1px solid #2b435f;border-radius:8px;padding:6px 8px;cursor:pointer}
+  #ui button:hover{background:#1f3046}
+  #hud{position:fixed;left:10px;bottom:10px;background:#0009;padding:6px 8px;border-radius:10px;font-size:12px;z-index:19}
+  #sbsLabels{position:fixed;top:8px;left:0;right:0;display:flex;justify-content:space-between;pointer-events:none;z-index:18}
+  .pill{background:#0009;border:1px solid #335;padding:4px 8px;border-radius:999px;font-size:12px}
+  .pill.L{margin-left:12%;color:#ffb3b3;border-color:#553}
+  .pill.R{margin-right:12%;color:#b3e6ff;border-color:#355}
+  canvas#webgl{display:block;width:100vw;height:100vh}
+  #popControls{display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap}
+  #popStatus{flex:0 0 72px;width:72px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:700;border-radius:8px;background:#072029;color:#7bd1ff;border:1px solid #0b3e4a;font-size:12px;box-sizing:border-box}
+  .muted{color:var(--muted);font-size:12px}
+  .small{font-size:12px}
+  .upload-list{font-size:12px;color:var(--muted);margin-top:4px}
+  .col{display:flex;flex-direction:column;gap:6px}
+  #debugBox{position:fixed;right:10px;top:10px;background:#08121acc;color:#9fb3c7;padding:8px;border-radius:8px;font-size:12px;z-index:21;max-width:360px;max-height:70vh;overflow:auto}
+  #diagCanvas{position:fixed;right:10px;bottom:10px;width:160px;height:120px;border:2px solid #223449;border-radius:8px;z-index:22;background:#000}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div style="font-size:15px;margin-bottom:6px"><b>Single‑Sphere Binocular Trainer</b> — 프리미티브 + 2D 이미지 평면(L/R 업로드)</div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+    <button id="btnStart">▶ Start Preview (SxS)</button>
+    <button id="btnStop">⏸ Pause</button>
+    <label>미리보기
+      <select id="previewMode">
+        <option value="sbs" selected>Side‑by‑Side (PC)</option>
+        <option value="mono">단일 뷰 (디버그)</option>
+      </select>
+    </label>
+  </div>
+
+  <fieldset style="margin-top:8px">
+    <legend>보기 거리 (VR/PC 공통)</legend>
+    <label>거리 (m)
+      <input id="distanceMeters" type="range" min="1" max="10" step="0.1" value="4">
+    </label>
+    <div class="muted small">VR에서는 카메라 대신 <i>장면</i>을 이동시켜 거리를 조절합니다. (컨트롤러 스틱도 지원)</div>
+  </fieldset>
+
+  <fieldset style="margin-top:8px">
+    <legend>소스 선택</legend>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label>소스
+        <select id="source" style="min-width:260px">
+          <option value="primitive" selected>Primitive (프리미티브)</option>
+          <option value="image_pair">Uploaded Image (L/R 이미지)</option>
+        </select>
+      </label>
+
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div class="col">
+          <label>왼쪽 이미지 업로드 (2D)
+            <input id="uploadImageL" type="file" accept=".jpg,.jpeg,.png">
+          </label>
+          <div id="uploadedL" class="upload-list muted">왼쪽 이미지 없음</div>
+        </div>
+
+        <div class="col">
+          <label>오른쪽 이미지 업로드 (2D)
+            <input id="uploadImageR" type="file" accept=".jpg,.jpeg,.png">
+          </label>
+          <div id="uploadedR" class="upload-list muted">오른쪽 이미지 없음</div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:6px;margin-left:6px">
+          <label style="align-items:center"><input id="usePerEyeTexturesOption" type="checkbox"> Use per-eye primitive textures</label>
+          <div class="muted small">이미지 페어 선택 시 좌/우 이미지를 업로드하세요.</div>
+        </div>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset style="margin-top:8px">
+    <legend>프리미티브</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <label>모양
+        <select id="primitive">
+          <option value="sphere" selected>Sphere</option>
+          <option value="box">Box</option>
+          <option value="cylinder">Cylinder</option>
+          <option value="plane">Plane</option>
+        </select>
+      </label>
+      <label>크기(scale) <input id="primSize" type="range" min="0.2" max="2" step="0.01" value="0.9"></label>
+      <label>자동회전 <input id="autoRotate" type="checkbox" checked></label>
+    </div>
+  </fieldset>
+
+  <fieldset style="margin-top:8px">
+    <legend>텍스쳐 & 필터 (프리미티브 전용 / 좌/우)</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <label>좌 텍스쳐
+        <input id="texL" type="file" accept=".jpg,.jpeg,.png">
+      </label>
+      <label>우 텍스쳐
+        <input id="texR" type="file" accept=".jpg,.jpeg,.png">
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+      <div style="border:1px solid #2b435f;border-radius:10px;padding:8px">
+        <div style="font-weight:600;color:#ffb3b3;margin-bottom:4px">Left</div>
+        <label>Luminance <input id="lumL" type="range" min="0.2" max="2" step="0.01" value="1.0"></label>
+        <label>Contrast  <input id="conL" type="range" min="0" max="2" step="0.01" value="1.0"></label>
+      </div>
+      <div style="border:1px solid #2b435f;border-radius:10px;padding:8px">
+        <div style="font-weight:600;color:#b3e6ff;margin-bottom:4px">Right</div>
+        <label>Luminance <input id="lumR" type="range" min="0.2" max="2" step="0.01" value="1.0"></label>
+        <label>Contrast  <input id="conR" type="range" min="0" max="2" step="0.01" value="1.0"></label>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset style="margin-top:8px">
+    <legend>팝아웃 (Up / Hold / Down 루프)</legend>
+    <div id="popControls">
+      <label>팝 대상<select id="popEye"><option value="L">Left</option><option value="R">Right</option></select></label>
+      <label>팝 거리 (m) <input id="popAmount" type="range" min="0" max="0.6" step="0.005" value="0.08"></label>
+      <label>올라가는 시간 (s) <input id="popTime" type="number" min="0.01" step="0.01" value="0.45" style="width:80px"></label>
+      <label>유지 시간 (s) <input id="holdTime" type="number" min="0" step="0.01" value="0.6" style="width:80px"></label>
+      <div id="popStatus">idle</div>
+    </div>
+  </fieldset>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
+    <button id="enterVR">Enter VR</button>
+    <button id="exitVR">Exit VR</button>
+    <button id="runDiag">Run Diagnostics</button>
+  </div>
+</div>
+
+<div id="sbsLabels"><span class="pill L">LEFT</span><span class="pill R">RIGHT</span></div>
+<canvas id="webgl"></canvas>
+<div id="hud">—</div>
+<div id="debugBox" aria-hidden="false">ready</div>
+<!-- diagnostic canvas for a raw GL test -->
+<canvas id="diagCanvas" width="160" height="120" style="display:none"></canvas>
+
+<!-- three.js 로컬 우선, 실패 시 CDN 폴백 -->
+<script src="./three.min.js"></script>
+<script>
+  if(!window.THREE){
+    var s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js';
+    s.onload=function(){ console.log('[three] loaded from CDN'); };
+    s.onerror=function(){ console.error('[three] CDN load failed'); };
+    document.head.appendChild(s);
+  }
+</script>
+<script>
+(function(){
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const debugBox = $('debugBox');
+  function dbg(s){ debugBox.textContent = String(s); console.log(s); }
+  // 네트워크 상태 모니터링(샌드박스/CDN 문제 파악용)
+  (function(){
+    function netDbg(){ const on = navigator.onLine; const m = on ? 'online' : 'offline — CDN/요청 실패 가능'; dbg('[net] '+m); }
+    window.addEventListener('online', netDbg);
+    window.addEventListener('offline', netDbg);
+    try{ netDbg(); }catch(e){}
+  })()
+
+  // Renderer + scene
+  const canvas = $('webgl');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:false });
+  renderer.xr.enabled = true;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.domElement.style.touchAction = 'none';
+  renderer.xr.setReferenceSpaceType && renderer.xr.setReferenceSpaceType('local-floor');
+
+  function fit(){ const dpr=Math.min(2,window.devicePixelRatio||1); renderer.setPixelRatio(dpr); renderer.setSize(window.innerWidth, window.innerHeight, false); }
+  window.addEventListener('resize', fit);
+  fit();
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101218);
+
+  const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
+  camera.position.set(0,0,2.2); // PC 미리보기 기본값
+
+  const amb = new THREE.AmbientLight(0xffffff, 0.9); scene.add(amb);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(3,5,4); scene.add(dir);
+  const lightDir = new THREE.Vector3().copy(dir.position).normalize();
+
+  // ===== 스테이지 그룹(거리 조절 대상) =====
+  const stage = new THREE.Group();
+  scene.add(stage);
+
+  const fusionGroup = new THREE.Group();
+  stage.add(fusionGroup);
+
+  const LAYER_L = 1, LAYER_R = 2;
+
+  // state
+  let meshL = null, meshR = null;
+  let uploadedL = null, uploadedR = null;
+  const texLoader = new THREE.TextureLoader(); texLoader.setCrossOrigin('anonymous');
+
+  function commonUniforms(){ return {
+    uMap:{value:null}, uHasMap:{value:0},
+    uLum:{value:1.0}, uCon:{value:1.0}, uTint:{value:new THREE.Vector3(0,0,0)},
+    uLightDir:{value:lightDir.clone()}, uBaseColor:{value:new THREE.Color(0xffffff)}, uGamma:{value:2.2}
+  }; }
+  const vert = `varying vec2 vUv; varying vec3 vN; void main(){ vUv=uv; vN=normalize(normalMatrix*normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+  const frag = `
+    uniform sampler2D uMap; uniform int uHasMap; uniform float uLum, uCon, uGamma; uniform vec3 uTint; uniform vec3 uLightDir; uniform vec3 uBaseColor;
+    varying vec2 vUv; varying vec3 vN;
+    float satf(float x){ return clamp(x,0.0,1.0); }
+    vec3 rgb2hsv(vec3 c){ float cmax=max(c.r,max(c.g,c.b)); float cmin=min(c.r,min(c.g,c.b)); float d=cmax-cmin; float h=0.0;
+      if(d>1e-5){ if(cmax==c.r) h=mod((c.g-c.b)/d,6.0); else if(cmax==c.g) h=(c.b-c.r)/d+2.0; else h=(c.r-c.g)/d+4.0; }
+      float s=cmax==0.0?0.0:d/cmax; return vec3(60.0*h,s,cmax);
+    }
+    vec3 hsv2rgb(vec3 h){ float H=h.x/60.0; float S=h.y; float V=h.z; float C=V*S; float X=C*(1.0-abs(mod(H,2.0)-1.0)); vec3 rgb=(H<1.0?vec3(C,X,0.0):H<2.0?vec3(X,C,0.0):H<3.0?vec3(0.0,C,X):H<4.0?vec3(0.0,X,C):H<5.0?vec3(X,0.0,C):vec3(C,0.0,X)); float m=V-C; return rgb+vec3(m); }
+    void main(){
+      vec3 base = uHasMap==1 ? texture2D(uMap,vUv).rgb : uBaseColor;
+      base = (base-0.5)*uCon + 0.5;
+      base *= uLum;
+      if(uTint.z>0.001){ vec3 hv=rgb2hsv(base); hv.x = mod(uTint.x,360.0); hv.y = clamp(hv.y+uTint.y,0.0,1.0); vec3 tc=hsv2rgb(hv); base = mix(base,tc,clamp(uTint.z,0.0,1.0)); }
+      float lam = max(0.0, dot(normalize(vN), normalize(uLightDir)));
+      vec3 col = base * (0.35 + 0.65 * lam);
+      col = pow(col, vec3(1.0/uGamma));
+      gl_FragColor = vec4(satf(col.r), satf(col.g), satf(col.b), 1.0);
+    }
+  `;
+  function makePrimitiveMaterial(){ return new THREE.ShaderMaterial({uniforms:commonUniforms(), vertexShader:vert, fragmentShader:frag, lights:false, fog:false, transparent:false, side:THREE.DoubleSide}); }
+
+  function buildPrimitiveGeo(kind,size){
+    const s = Math.max(0.05,size);
+    switch(kind){
+      case 'sphere': return new THREE.SphereGeometry(s*0.5,64,40);
+      case 'box': return new THREE.BoxGeometry(s,s,s);
+      case 'cylinder': return new THREE.CylinderGeometry(s*0.5,s*0.5,s,64,1,false);
+      case 'plane': return new THREE.PlaneGeometry(s,s,1,1);
+      default: return new THREE.SphereGeometry(s*0.5,64,40);
+    }
+  }
+
+  function disposeMesh(m){
+    if(!m) return;
+    if(m.geometry) m.geometry.dispose();
+    if(m.material){ if(Array.isArray(m.material)) m.material.forEach(x=>x.dispose()); else m.material.dispose(); }
+  }
+
+  function clearFusion(){
+    if(meshL){ fusionGroup.remove(meshL); disposeMesh(meshL); meshL=null; }
+    if(meshR){ fusionGroup.remove(meshR); disposeMesh(meshR); meshR=null; }
+  }
+
+  function buildFusionFromPrimitive(kind,size){
+    clearFusion();
+    const geo = buildPrimitiveGeo(kind,size);
+    const matL = makePrimitiveMaterial(), matR = makePrimitiveMaterial();
+    meshL = new THREE.Mesh(geo, matL); meshL.layers.set(LAYER_L); meshL.position.x = -0.03;
+    meshR = new THREE.Mesh(geo.clone ? geo.clone() : geo, matR); meshR.layers.set(LAYER_R); meshR.position.x = 0.03;
+    meshL.userData.basePos = meshL.position.clone(); meshR.userData.basePos = meshR.position.clone();
+    fusionGroup.add(meshL); fusionGroup.add(meshR);
+  }
+
+  function buildFusionFromImagePair(){
+    clearFusion();
+    const primSize = +$('primSize').value || 0.9;
+    const leftMeta = uploadedL, rightMeta = uploadedR;
+    if(!leftMeta && !rightMeta){ dbg('왼쪽 또는 오른쪽 이미지를 업로드하세요.'); return; }
+    function makePlaneFromMeta(meta){
+      const aspect = (meta && meta.width && meta.height) ? (meta.width/meta.height) : 1.0;
+      const h = primSize; const w = primSize * aspect;
+      const geo = new THREE.PlaneGeometry(w,h);
+      const mat = new THREE.MeshBasicMaterial({ map: meta ? texLoader.load(meta.url) : null, side: THREE.DoubleSide });
+      return {geo,mat};
+    }
+    const left = makePlaneFromMeta(leftMeta), right = makePlaneFromMeta(rightMeta);
+    meshL = new THREE.Mesh(left.geo, left.mat); meshL.layers.set(LAYER_L); meshL.userData.isImagePlane = true; meshL.position.x = -0.03; meshL.userData.basePos = meshL.position.clone();
+    meshR = new THREE.Mesh(right.geo, right.mat); meshR.layers.set(LAYER_R); meshR.userData.isImagePlane = true; meshR.position.x = 0.03; meshR.userData.basePos = meshR.position.clone();
+    fusionGroup.add(meshL); fusionGroup.add(meshR);
+  }
+
+  // Upload handlers
+  $('uploadImageL').addEventListener('change', (e)=>{
+    const f = e.target.files && e.target.files[0];
+    if(!f) return;
+    if(!f.name.match(/\.(jpe?g|png)$/i)){ dbg('JPG/JPEG/PNG만 지원합니다'); return; }
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = ()=>{ uploadedL = {url, width: img.naturalWidth, height: img.naturalHeight, name: f.name}; $('uploadedL').textContent = f.name; if($('source').value === 'image_pair') buildFusionFromImagePair(); };
+    img.onerror = ()=>{ dbg('왼쪽 이미지 로드 실패'); URL.revokeObjectURL(url); };
+    img.src = url;
+  });
+  $('uploadImageR').addEventListener('change', (e)=>{
+    const f = e.target.files && e.target.files[0];
+    if(!f) return;
+    if(!f.name.match(/\.(jpe?g|png)$/i)){ dbg('JPG/JPEG/PNG만 지원합니다'); return; }
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = ()=>{ uploadedR = {url, width: img.naturalWidth, height: img.naturalHeight, name: f.name}; $('uploadedR').textContent = f.name; if($('source').value === 'image_pair') buildFusionFromImagePair(); };
+    img.onerror = ()=>{ dbg('오른쪽 이미지 로드 실패'); URL.revokeObjectURL(url); };
+    img.src = url;
+  });
+
+  // controls
+  $('source').addEventListener('change', ()=>{ if($('source').value==='primitive') buildFusionFromPrimitive($('primitive').value, +$('primSize').value); else buildFusionFromImagePair(); });
+  $('primitive').addEventListener('change', ()=>{ if($('source').value==='primitive') buildFusionFromPrimitive($('primitive').value, +$('primSize').value); });
+  $('primSize').addEventListener('input', ()=>{ if($('source').value==='primitive') buildFusionFromPrimitive($('primitive').value, +$('primSize').value); else buildFusionFromImagePair(); });
+
+  function setPrimitiveTexture(eye, file){
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=> {
+      const url = reader.result;
+      texLoader.load(url, (tex)=>{
+        tex.encoding = THREE.sRGBEncoding; tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.minFilter = THREE.LinearMipMapLinearFilter; tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = true; tex.needsUpdate = true;
+        if($('usePerEyeTexturesOption').checked){
+          const target = eye === 'L' ? meshL : meshR;
+          if(!target){ console.warn('대상 메쉬 없음'); return; }
+          if(target.material && target.material.uniforms){
+            target.material.uniforms.uMap.value = tex; target.material.uniforms.uHasMap.value = 1; target.material.needsUpdate = true;
+          } else if(target.material){
+            target.material.map = tex; target.material.needsUpdate = true;
+          }
+        } else {
+          dbg('Use per-eye primitive textures 옵션이 꺼져 있습니다. 옵션을 켜면 프리미티브에 적용됩니다.');
+        }
+      }, undefined, (err)=>{ console.error(err); dbg('텍스쳐 로드 실패'); });
+    };
+    reader.readAsDataURL(file);
+  }
+  $('texL').addEventListener('change', (e)=>{ const f = e.target.files && e.target.files[0]; if(f) setPrimitiveTexture('L', f); });
+  $('texR').addEventListener('change', (e)=>{ const f = e.target.files && e.target.files[0]; if(f) setPrimitiveTexture('R', f); });
+
+  // ===== 거리 조절 =====
+  function applyDistance(m){
+    const d = Math.min(10, Math.max(0.5, m||4));
+    stage.position.z = -d; // 장면을 뒤로 밀어 VR/PC 모두에서 거리감 확보
+    $('hud').textContent = `distance: ${d.toFixed(2)}m`;
+  }
+  $('distanceMeters').addEventListener('input', e=> applyDistance(parseFloat(e.target.value)) );
+
+  // Pop loop
+  let running=false, lastT=performance.now(), popClock=0;
+  function updatePop(dt){
+    const popTime = Math.max(0.0001, +$('popTime').value);
+    const holdTime = Math.max(0, +$('holdTime').value);
+    const cycle = popTime + holdTime + popTime;
+    if(cycle <= 0.0001 || (!meshL && !meshR)){ $('popStatus').textContent = 'idle'; return; }
+    popClock += dt;
+    const t = popClock % cycle;
+    let state='idle', curAmount=0;
+    if(t < popTime){ state='up'; const p = t/popTime; const ease=(1 - Math.cos(Math.PI * p))/2; curAmount = ease * +$('popAmount').value; }
+    else if(t < popTime + holdTime){ state='hold'; curAmount = +$('popAmount').value; }
+    else { state='down'; const q = (t - popTime - holdTime)/popTime; curAmount = (1 - q) * +$('popAmount').value; }
+    $('popStatus').textContent = state;
+
+    const stageWorld = stage.getWorldPosition(new THREE.Vector3());
+    const camWorldPos = camera.getWorldPosition(new THREE.Vector3());
+    const dir = camWorldPos.sub(stageWorld).normalize();
+    const worldTarget = stageWorld.clone().add(dir.multiplyScalar(curAmount));
+    const localTarget = stage.worldToLocal(worldTarget.clone());
+
+    const popEye = $('popEye').value;
+    if(meshL){
+      const baseL = meshL.userData.basePos || new THREE.Vector3();
+      if(popEye === 'L') meshL.position.copy(baseL).add(localTarget); else meshL.position.copy(baseL);
+    }
+    if(meshR){
+      const baseR = meshR.userData.basePos || new THREE.Vector3();
+      if(popEye === 'R') meshR.position.copy(baseR).add(localTarget); else meshR.position.copy(baseR);
+    }
+  }
+
+  // Render loop (non-XR)
+  function renderLoop(t){
+    if(!running) return;
+    const dt = (t - lastT)/1000; lastT = t;
+
+    if($('source').value === 'image_pair'){
+      if(meshL && meshL.userData.isImagePlane) meshL.quaternion.copy(camera.quaternion);
+      if(meshR && meshR.userData.isImagePlane) meshR.quaternion.copy(camera.quaternion);
+    } else {
+      if($('autoRotate').checked) fusionGroup.rotation.y += dt * (+$('primSize') || 0.4);
+    }
+
+    updatePop(dt);
+
+    const w = renderer.domElement.width, h = renderer.domElement.height;
+    renderer.setScissorTest(false); renderer.clear();
+
+    if($('previewMode').value === 'sbs'){
+      const half = Math.max(1, w >> 1);
+      camera.aspect = half/h; camera.updateProjectionMatrix();
+      renderer.setScissorTest(true);
+      renderer.setViewport(0,0,half,h); renderer.setScissor(0,0,half,h);
+      camera.layers.set(LAYER_L); renderer.render(scene, camera);
+      renderer.setViewport(half,0,half,h); renderer.setScissor(half,0,half,h);
+      camera.layers.set(LAYER_R); renderer.render(scene, camera);
+      camera.layers.set(0);
+      renderer.setScissorTest(false);
+    } else {
+      camera.aspect = w/h; camera.updateProjectionMatrix();
+      renderer.setViewport(0,0,w,h);
+      camera.layers.enable(LAYER_L); camera.layers.enable(LAYER_R);
+      renderer.render(scene, camera);
+      camera.layers.set(0);
+    }
+
+    requestAnimationFrame(renderLoop);
+  }
+
+  $('btnStart').addEventListener('click', ()=>{ if(!running){ running=true; lastT=performance.now(); requestAnimationFrame(renderLoop); dbg('Preview started'); }});
+  $('btnStop').addEventListener('click', ()=>{ running=false; dbg('Preview paused'); });
+
+  // XR entry (robust)
+  let xrSession = null;
+  $('enterVR').addEventListener('click', async ()=>{
+    try{
+      if(!navigator.xr){ dbg('WebXR 미지원: HTTPS에서 최신 브라우저를 사용하세요.'); return; }
+      const supportsVR = await navigator.xr.isSessionSupported('immersive-vr').catch(()=>false);
+      if(!supportsVR){
+        const supportsAR = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
+        if(!supportsAR){ dbg('immersive-vr/immersive-ar 미지원 기기입니다.'); return; }
+        if(!confirm('immersive-vr 미지원, immersive-ar는 지원합니다. AR로 시도할까요?')) return;
+      }
+
+      const sessionInit = { optionalFeatures: ['local-floor','bounded-floor','layers','hand-tracking','viewer'] };
+      try{ xrSession = await navigator.xr.requestSession('immersive-vr', sessionInit); }
+      catch(err){
+        console.warn('immersive-vr request failed:', err);
+        const arSupported = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
+        if(arSupported) xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
+        else throw err;
+      }
+
+      await renderer.xr.setSession(xrSession);
+      lastT = performance.now();
+
+      // XR 런타임 루프
+      renderer.setAnimationLoop((now)=>{
+        const dt = (now - lastT) / 1000; lastT = now;
+
+        // 컨트롤러 스틱으로 거리 조절 (양 컨트롤러 지원)
+        try{
+          for(const src of xrSession.inputSources){
+            if(!src.gamepad) continue;
+            const g = src.gamepad; // axes: [x,y] or [x,y,x2,y2] 기기별 상이
+            const axesY = (g.axes && g.axes.length>=2) ? g.axes[g.axes.length-1] : 0; // 마지막 축을 Y로 사용
+            const dead = 0.18;
+            const y = Math.abs(axesY) > dead ? axesY : 0;
+            if(y){
+              const cur = parseFloat($('distanceMeters').value);
+              const speed = 2.2; // m/s 기준
+              const next = Math.min(10, Math.max(1, cur + (-y)*speed*dt));
+              if(Math.abs(next-cur) > 1e-3){ $('distanceMeters').value = next.toFixed(2); applyDistance(next); }
+            }
+          }
+        }catch(e){ /* noop */ }
+
+        if(running) updatePop(dt);
+        if($('source').value === 'image_pair'){
+          const xrCamNow = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
+          const quat = (xrCamNow && xrCamNow.quaternion) ? xrCamNow.quaternion : camera.quaternion;
+          if(meshL && meshL.userData.isImagePlane) meshL.quaternion.copy(quat);
+          if(meshR && meshR.userData.isImagePlane) meshR.quaternion.copy(quat);
+        } else {
+          if($('autoRotate').checked) fusionGroup.rotation.y += dt * (+$('primSize') || 0.4);
+        }
+
+        // per-eye layers 안전 설정
+        const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
+        if(xrCam && xrCam.isArrayCamera && xrCam.cameras && xrCam.cameras.length>=2){
+          try{
+            const p0 = new THREE.Vector3(), p1 = new THREE.Vector3();
+            xrCam.cameras[0].getWorldPosition(p0); xrCam.cameras[1].getWorldPosition(p1);
+            if(p0.x < p1.x){ xrCam.cameras[0].layers.enable(LAYER_L); xrCam.cameras[1].layers.enable(LAYER_R); }
+            else { xrCam.cameras[1].layers.enable(LAYER_L); xrCam.cameras[0].layers.enable(LAYER_R); }
+          }catch(e){ console.warn('XR camera mapping error', e); }
+        }
+
+        renderer.render(scene, camera);
+      });
+
+      xrSession.addEventListener('end', ()=>{ renderer.setAnimationLoop(null); xrSession=null; lastT = performance.now(); dbg('XR session ended'); });
+      dbg('XR session started: OK');
+    }catch(e){
+      console.error('VR 진입 오류:', e);
+      dbg('VR 진입 오류: ' + (e && e.message ? e.message : e));
+      dbg('XR error: ' + (e && e.message ? e.message : e));
+    }
+  });
+
+  $('exitVR').addEventListener('click', async ()=>{ try{ if(xrSession) await xrSession.end(); }catch(e){ console.warn('XR 세션 종료 실패', e); dbg('XR end error: '+e); } });
+
+  // Ensure camera sees both L/R by default
+  camera.layers.enable(LAYER_L); camera.layers.enable(LAYER_R);
+
+  // fallback sphere를 stage에 넣어 거리 조절 영향 받도록 구성
+  const fallbackGeo = new THREE.SphereGeometry(0.12, 32, 20);
+  const fallbackMat = new THREE.MeshStandardMaterial({color:0x8888ff, metalness:0.1, roughness:0.7});
+  const fallback = new THREE.Mesh(fallbackGeo, fallbackMat);
+  fallback.position.set(0, -0.15, -0.9);
+  fallback.userData._isFallback = true;
+  stage.add(fallback);
+
+  // 초기 콘텐츠
+  buildFusionFromPrimitive('sphere', +$('primSize').value);
+
+  // 초기 거리 적용 (멀리)
+  applyDistance(parseFloat($('distanceMeters').value));
+
+  // 초기 1프레임 렌더
+  try{ renderer.render(scene, camera); dbg('Initial frame rendered. If still black, click "Run Diagnostics" and copy the debug output.'); }
+  catch(e){ dbg('Initial render failed: ' + (e && e.message)); console.error(e); }
+
+  // auto-start preview
+  running = true; lastT = performance.now(); requestAnimationFrame(renderLoop);
+
+  // ---------- Diagnostics ----------
+  function runRawGLTest(){
+    const diag = $('diagCanvas');
+    diag.style.display = 'block';
+    const gl = diag.getContext('webgl2') || diag.getContext('webgl') || diag.getContext('experimental-webgl');
+    if(!gl) return {ok:false, msg:'WebGL context not available for diag canvas'};
+    gl.clearColor(0.1, 0.2, 0.6, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    return {
+      ok:true,
+      glVersion: gl.getParameter(gl.VERSION),
+      shadingLang: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+      vendor: gl.getParameter(gl.VENDOR),
+      renderer: gl.getParameter(gl.RENDERER),
+      maxTexSize: gl.getParameter(gl.MAX_TEXTURE_SIZE)
+    };
+  }
+
+  function dumpDiagnostics(){
+    try{
+      const out = [];
+      out.push('--- Diagnostics snapshot ---');
+      out.push('canvas size (css): ' + (canvas.width/ (window.devicePixelRatio||1)).toFixed(1) + 'x' + (canvas.height/ (window.devicePixelRatio||1)).toFixed(1) + ' (physical: ' + canvas.width + 'x' + canvas.height + ')');
+      let glInfo = {};
+      try{
+        const gl = renderer.getContext();
+        glInfo = {
+          version: gl.getParameter(gl.VERSION),
+          sl: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+          vendor: gl.getParameter(gl.VENDOR),
+          renderer: gl.getParameter(gl.RENDERER),
+          maxTexSize: gl.getParameter(gl.MAX_TEXTURE_SIZE)
+        };
+      }catch(e){ out.push('renderer.getContext() failed: ' + e.message); }
+      out.push('GL: ' + JSON.stringify(glInfo));
+
+      out.push('three.renderer.info: ' + JSON.stringify(renderer.info));
+
+      out.push('camera pos: ' + camera.position.toArray().map(n=>n.toFixed(3)).join(', ') + ' layersMask:' + camera.layers.mask);
+      out.push('camera near/far: ' + camera.near + '/' + camera.far + ' fov:' + camera.fov);
+
+      out.push('scene.children count: ' + scene.children.length);
+      scene.children.forEach((c,i)=>{
+        try{
+          const typ = c.type || c.constructor && c.constructor.name;
+          const pos = c.position ? c.position.toArray().map(n=>n.toFixed(3)).join(',') : '';
+          out.push(`${i}: ${typ} name=${c.name||''} visible=${c.visible} pos=[${pos}]`);
+        }catch(e){}
+      });
+
+      function meshInfo(m, name){
+        if(!m) return `${name}: (null)`;
+        const matType = m.material ? (m.material.type || m.material.constructor && m.material.constructor.name) : 'no-material';
+        const map = (m.material && m.material.map) ? 'hasMap' : 'noMap';
+        return `${name}: pos=${m.position.toArray().map(n=>n.toFixed(3)).join(',')} visible=${m.visible} layers=${m.layers.mask} type=${matType} ${map}`;
+      }
+      out.push(meshInfo(meshL,'meshL'));
+      out.push(meshInfo(meshR,'meshR'));
+      out.push('fallback present: ' + (fallback && fallback.parent ? 'yes' : 'no'));
+
+      const raw = runRawGLTest();
+      out.push('rawGL test: ' + JSON.stringify(raw));
+
+      const txt = out.join('\n');
+      dbg(txt);
+      return txt;
+    }catch(e){
+      dbg('Diagnostics failed: ' + (e && e.message));
+      return 'Diagnostics exception: ' + (e && e.message);
+    }
+  }
+
+  window.appDiagnostics = { dump: dumpDiagnostics, runRawGLTest };
+  $('runDiag').addEventListener('click', ()=>{ const r = dumpDiagnostics(); dbg('Diagnostics output printed to Debug box and Console.'); });
+
+})();
+</script>
+</body>
+</html>
