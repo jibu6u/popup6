@@ -25,7 +25,7 @@
   .small{font-size:12px}
   .upload-list{font-size:12px;color:var(--muted);margin-top:4px}
   .col{display:flex;flex-direction:column;gap:6px}
-  #debugBox{position:fixed;right:10px;top:10px;background:#08121acc;color:#9fb3c7;padding:8px;border-radius:8px;font-size:12px;z-index:21;max-width:360px;max-height:70vh;overflow:auto}
+  #debugBox{position:fixed;right:10px;top:10px;background:#08121acc;color:#9fb3c7;padding:8px;border-radius:8px;font-size:12px;z-index:21;max-width:360px;max-height:70vh;overflow:auto;white-space:pre-wrap}
   #diagCanvas{position:fixed;right:10px;bottom:10px;width:160px;height:120px;border:2px solid #223449;border-radius:8px;z-index:22;background:#000}
 </style>
 </head>
@@ -136,6 +136,45 @@
     </div>
   </fieldset>
 
+  <fieldset style="margin-top:8px">
+    <legend>약시 훈련 모드</legend>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <label>약시안
+        <select id="ambEye">
+          <option value="L">Left</option>
+          <option value="R">Right</option>
+        </select>
+      </label>
+      <label>모드
+        <select id="therapyMode">
+          <option value="off" selected>Off</option>
+          <option value="swap">Swap Blink (우세안에 잠깐 표시)</option>
+          <option value="disparity">Disparity Pop (앞으로 튀어나오기)</option>
+        </select>
+      </label>
+      <label>주기 (s)
+        <input id="thermPeriod" type="number" min="0.2" step="0.1" value="2.0">
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:6px">
+      <label>듀티(ON 비율 0~1)
+        <input id="thermDuty" type="number" min="0.05" max="0.95" step="0.05" value="0.3">
+      </label>
+      <label>Disparity 유지 (s)
+        <input id="disparityHold" type="number" min="0" step="0.1" value="0.8">
+      </label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="audioToggle" type="button">🔔 Audio Cue: Off</button>
+        <button id="audioTest" type="button">Test</button>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;align-items:center;margin-top:8px">
+      <label style="display:flex;align-items:center;gap:6px"><input id="ambBoost" type="checkbox"> 약시안 Brighten (ambBoost)</label>
+      <div class="muted small">* Swap Blink: 약시 이미지를 우세안 디스플레이에 잠깐 보여줬다가 숨깁니다. Disparity Pop: 약시안 대상이 전방으로 팝아웃됩니다. 오디오 큐는 팝 시작 시 1회 짧게 재생됩니다.</div>
+    </div>
+  </fieldset>
+
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
     <button id="enterVR">Enter VR</button>
     <button id="exitVR">Exit VR</button>
@@ -167,13 +206,7 @@
   const $ = id => document.getElementById(id);
   const debugBox = $('debugBox');
   function dbg(s){ debugBox.textContent = String(s); console.log(s); }
-  // 네트워크 상태 모니터링(샌드박스/CDN 문제 파악용)
-  (function(){
-    function netDbg(){ const on = navigator.onLine; const m = on ? 'online' : 'offline — CDN/요청 실패 가능'; dbg('[net] '+m); }
-    window.addEventListener('online', netDbg);
-    window.addEventListener('offline', netDbg);
-    try{ netDbg(); }catch(e){}
-  })()
+  (function(){ function netDbg(){ const on = navigator.onLine; const m = on ? 'online' : 'offline — CDN/요청 실패 가능'; dbg('[net] '+m); } window.addEventListener('online', netDbg); window.addEventListener('offline', netDbg); try{ netDbg(); }catch(e){} })();
 
   // Renderer + scene
   const canvas = $('webgl');
@@ -181,7 +214,7 @@
   renderer.xr.enabled = true;
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.domElement.style.touchAction = 'none';
-  renderer.xr.setReferenceSpaceType && renderer.xr.setReferenceSpaceType('local-floor');
+  if(renderer.xr.setReferenceSpaceType) renderer.xr.setReferenceSpaceType('local-floor');
 
   function fit(){ const dpr=Math.min(2,window.devicePixelRatio||1); renderer.setPixelRatio(dpr); renderer.setSize(window.innerWidth, window.innerHeight, false); }
   window.addEventListener('resize', fit);
@@ -191,22 +224,17 @@
   scene.background = new THREE.Color(0x101218);
 
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.01, 100);
-  camera.position.set(0,0,2.2); // PC 미리보기 기본값
+  camera.position.set(0,0,2.2);
 
   const amb = new THREE.AmbientLight(0xffffff, 0.9); scene.add(amb);
   const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(3,5,4); scene.add(dir);
   const lightDir = new THREE.Vector3().copy(dir.position).normalize();
 
-  // ===== 스테이지 그룹(거리 조절 대상) =====
-  const stage = new THREE.Group();
-  scene.add(stage);
-
-  const fusionGroup = new THREE.Group();
-  stage.add(fusionGroup);
+  const stage = new THREE.Group(); scene.add(stage);
+  const fusionGroup = new THREE.Group(); stage.add(fusionGroup);
 
   const LAYER_L = 1, LAYER_R = 2;
 
-  // state
   let meshL = null, meshR = null;
   let uploadedL = null, uploadedR = null;
   const texLoader = new THREE.TextureLoader(); texLoader.setCrossOrigin('anonymous');
@@ -252,8 +280,8 @@
 
   function disposeMesh(m){
     if(!m) return;
-    if(m.geometry) m.geometry.dispose();
-    if(m.material){ if(Array.isArray(m.material)) m.material.forEach(x=>x.dispose()); else m.material.dispose(); }
+    try{ if(m.geometry) m.geometry.dispose(); }catch(e){}
+    if(m.material){ if(Array.isArray(m.material)) m.material.forEach(x=>{ try{x.dispose();}catch(e){} }); else try{ m.material.dispose(); }catch(e){} }
   }
 
   function clearFusion(){
@@ -280,7 +308,7 @@
       const aspect = (meta && meta.width && meta.height) ? (meta.width/meta.height) : 1.0;
       const h = primSize; const w = primSize * aspect;
       const geo = new THREE.PlaneGeometry(w,h);
-      const mat = new THREE.MeshBasicMaterial({ map: meta ? texLoader.load(meta.url) : null, side: THREE.DoubleSide });
+      const mat = new THREE.MeshBasicMaterial({ map: meta ? texLoader.load(meta.url, (tx)=>{ try{ tx.encoding = THREE.sRGBEncoding; }catch(e){} }, undefined, ()=>{} ) : null, side: THREE.DoubleSide });
       return {geo,mat};
     }
     const left = makePlaneFromMeta(leftMeta), right = makePlaneFromMeta(rightMeta);
@@ -322,7 +350,8 @@
     reader.onload = ()=> {
       const url = reader.result;
       texLoader.load(url, (tex)=>{
-        tex.encoding = THREE.sRGBEncoding; tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        try{ tex.encoding = THREE.sRGBEncoding; }catch(e){}
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
         tex.minFilter = THREE.LinearMipMapLinearFilter; tex.magFilter = THREE.LinearFilter; tex.generateMipmaps = true; tex.needsUpdate = true;
         if($('usePerEyeTexturesOption').checked){
           const target = eye === 'L' ? meshL : meshR;
@@ -345,13 +374,17 @@
   // ===== 거리 조절 =====
   function applyDistance(m){
     const d = Math.min(10, Math.max(0.5, m||4));
-    stage.position.z = -d; // 장면을 뒤로 밀어 VR/PC 모두에서 거리감 확보
+    stage.position.z = -d;
     $('hud').textContent = `distance: ${d.toFixed(2)}m`;
+    camera.near = Math.max(0.01, d * 0.001);
+    camera.far = Math.max(10, d * 20);
+    camera.updateProjectionMatrix();
   }
   $('distanceMeters').addEventListener('input', e=> applyDistance(parseFloat(e.target.value)) );
 
   // Pop loop
   let running=false, lastT=performance.now(), popClock=0;
+  let popState = 'idle', prevPopState = 'idle';
   function updatePop(dt){
     const popTime = Math.max(0.0001, +$('popTime').value);
     const holdTime = Math.max(0, +$('holdTime').value);
@@ -359,11 +392,11 @@
     if(cycle <= 0.0001 || (!meshL && !meshR)){ $('popStatus').textContent = 'idle'; return; }
     popClock += dt;
     const t = popClock % cycle;
-    let state='idle', curAmount=0;
+    let state='idle', curAmount=0; prevPopState = popState;
     if(t < popTime){ state='up'; const p = t/popTime; const ease=(1 - Math.cos(Math.PI * p))/2; curAmount = ease * +$('popAmount').value; }
     else if(t < popTime + holdTime){ state='hold'; curAmount = +$('popAmount').value; }
     else { state='down'; const q = (t - popTime - holdTime)/popTime; curAmount = (1 - q) * +$('popAmount').value; }
-    $('popStatus').textContent = state;
+    $('popStatus').textContent = state; popState = state; if(popState!==prevPopState){ onPopStateChange(popState); }
 
     const stageWorld = stage.getWorldPosition(new THREE.Vector3());
     const camWorldPos = camera.getWorldPosition(new THREE.Vector3());
@@ -382,6 +415,56 @@
     }
   }
 
+  // === 약시 훈련 모드 ===
+  let therapyClock = 0;
+  function restoreNormalLayers(){ if(meshL) meshL.layers.set(LAYER_L); if(meshR) meshR.layers.set(LAYER_R); }
+  function applyTherapy(dt){
+    const mode   = $('therapyMode').value;
+    const ambEye = $('ambEye').value;
+    therapyClock += dt;
+
+    if (mode === 'swap') {
+      const period = Math.max(0.2, +$('thermPeriod').value || 2.0);
+      const duty   = Math.min(0.95, Math.max(0.05, +$('thermDuty').value || 0.3));
+      const on = (therapyClock % period) < (period * duty);
+      const amb = (ambEye === 'L') ? meshL : meshR;
+      const dom = (ambEye === 'L') ? meshR : meshL;
+      if (amb && dom){
+        if(on){
+          amb.layers.mask = (1<<LAYER_L) | (1<<LAYER_R);
+          dom.layers.mask = 0;
+        } else {
+          restoreNormalLayers();
+        }
+      }
+    } else if (mode === 'disparity') {
+      $('popEye').value = (ambEye==='L') ? 'L' : 'R';
+      const dispHold = Math.max(0, +$('disparityHold').value || +$('holdTime').value);
+      if (+$('holdTime').value !== dispHold) $('holdTime').value = String(dispHold);
+
+      const ambBoostEl = $('ambBoost');
+      if(ambBoostEl && ambBoostEl.checked){
+        try{
+          if(ambEye==='L' && meshL && meshL.material && meshL.material.uniforms){ meshL.material.uniforms.uLum.value=1.2; meshL.material.uniforms.uCon.value=1.1; }
+          if(ambEye==='R' && meshR && meshR.material && meshR.material.uniforms){ meshR.material.uniforms.uLum.value=1.2; meshR.material.uniforms.uCon.value=1.1; }
+          if(ambEye==='L' && meshR && meshR.material && meshR.material.uniforms){ meshR.material.uniforms.uLum.value=0.95; meshR.material.uniforms.uCon.value=0.95; }
+          if(ambEye==='R' && meshL && meshL.material && meshL.material.uniforms){ meshL.material.uniforms.uLum.value=0.95; meshL.material.uniforms.uCon.value=0.95; }
+        }catch(e){ console.warn('ambBoost apply failed', e); }
+      } else {
+        try{
+          if(meshL && meshL.material && meshL.material.uniforms){ meshL.material.uniforms.uLum.value=1.0; meshL.material.uniforms.uCon.value=1.0; }
+          if(meshR && meshR.material && meshR.material.uniforms){ meshR.material.uniforms.uLum.value=1.0; meshR.material.uniforms.uCon.value=1.0; }
+        }catch(e){}
+      }
+    } else {
+      restoreNormalLayers();
+      try{
+        if(meshL && meshL.material && meshL.material.uniforms){ meshL.material.uniforms.uLum.value=1.0; meshL.material.uniforms.uCon.value=1.0; }
+        if(meshR && meshR.material && meshR.material.uniforms){ meshR.material.uniforms.uLum.value=1.0; meshR.material.uniforms.uCon.value=1.0; }
+      }catch(e){}
+    }
+  }
+
   // Render loop (non-XR)
   function renderLoop(t){
     if(!running) return;
@@ -395,6 +478,7 @@
     }
 
     updatePop(dt);
+    applyTherapy(dt);
 
     const w = renderer.domElement.width, h = renderer.domElement.height;
     renderer.setScissorTest(false); renderer.clear();
@@ -412,7 +496,7 @@
     } else {
       camera.aspect = w/h; camera.updateProjectionMatrix();
       renderer.setViewport(0,0,w,h);
-      camera.layers.enable(LAYER_L); camera.layers.enable(LAYER_R);
+      camera.layers.mask = (1<<LAYER_L) | (1<<LAYER_R);
       renderer.render(scene, camera);
       camera.layers.set(0);
     }
@@ -423,81 +507,118 @@
   $('btnStart').addEventListener('click', ()=>{ if(!running){ running=true; lastT=performance.now(); requestAnimationFrame(renderLoop); dbg('Preview started'); }});
   $('btnStop').addEventListener('click', ()=>{ running=false; dbg('Preview paused'); });
 
-  // XR entry (robust)
+  // XR entry (robust, Quest-friendly)
   let xrSession = null;
   $('enterVR').addEventListener('click', async ()=>{
+    function show(msg){ dbg(msg); console.log('[enterVR] '+msg); }
     try{
-      if(!navigator.xr){ dbg('WebXR 미지원: HTTPS에서 최신 브라우저를 사용하세요.'); return; }
-      const supportsVR = await navigator.xr.isSessionSupported('immersive-vr').catch(()=>false);
-      if(!supportsVR){
-        const supportsAR = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
-        if(!supportsAR){ dbg('immersive-vr/immersive-ar 미지원 기기입니다.'); return; }
-        if(!confirm('immersive-vr 미지원, immersive-ar는 지원합니다. AR로 시도할까요?')) return;
+      // Quick environment hints
+      show('enterVR 버튼 클릭 - 시작. secureContext=' + window.isSecureContext + ' url=' + location.href);
+      if(!window.isSecureContext){
+        show('경고: WebXR은 https 또는 localhost에서만 동작할 수 있습니다. (파일:// 불가)');
+        // still attempt to continue if browser allows (some headsets allow)
       }
+      if(!navigator.xr){ show('navigator.xr 존재하지 않음 — 브라우저가 WebXR을 지원하지 않습니다.'); return; }
 
-      const sessionInit = { optionalFeatures: ['local-floor','bounded-floor','layers','hand-tracking','viewer'] };
-      try{ xrSession = await navigator.xr.requestSession('immersive-vr', sessionInit); }
-      catch(err){
-        console.warn('immersive-vr request failed:', err);
-        const arSupported = await navigator.xr.isSessionSupported('immersive-ar').catch(()=>false);
-        if(arSupported) xrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-        else throw err;
-      }
+      const supportsVR = await navigator.xr.isSessionSupported('immersive-vr').catch(e=>{ show('isSessionSupported(immersive-vr) 에러: '+e); return false; });
+      const supportsAR = await navigator.xr.isSessionSupported('immersive-ar').catch(e=>{ show('isSessionSupported(immersive-ar) 에러: '+e); return false; });
+      show('supports: immersive-vr=' + supportsVR + ' immersive-ar=' + supportsAR);
 
-      await renderer.xr.setSession(xrSession);
-      lastT = performance.now();
+      if(!supportsVR && !supportsAR){ show('기기에서 immersive-vr/immersive-ar 모두 미지원'); return; }
 
-      // XR 런타임 루프
-      renderer.setAnimationLoop((now)=>{
-        const dt = (now - lastT) / 1000; lastT = now;
+      // Try different option sets because some runtimes reject optionalFeatures.
+      const tries = [
+        { optionalFeatures: ['local-floor','bounded-floor','hand-tracking','layers'] },
+        { optionalFeatures: ['local-floor','layers'] },
+        { optionalFeatures: ['local-floor'] },
+        {}
+      ];
 
-        // 컨트롤러 스틱으로 거리 조절 (양 컨트롤러 지원)
+      let session = null, lastErr = null;
+      for(const opts of tries){
         try{
-          for(const src of xrSession.inputSources){
-            if(!src.gamepad) continue;
-            const g = src.gamepad; // axes: [x,y] or [x,y,x2,y2] 기기별 상이
-            const axesY = (g.axes && g.axes.length>=2) ? g.axes[g.axes.length-1] : 0; // 마지막 축을 Y로 사용
-            const dead = 0.18;
-            const y = Math.abs(axesY) > dead ? axesY : 0;
-            if(y){
-              const cur = parseFloat($('distanceMeters').value);
-              const speed = 2.2; // m/s 기준
-              const next = Math.min(10, Math.max(1, cur + (-y)*speed*dt));
-              if(Math.abs(next-cur) > 1e-3){ $('distanceMeters').value = next.toFixed(2); applyDistance(next); }
-            }
-          }
-        }catch(e){ /* noop */ }
-
-        if(running) updatePop(dt);
-        if($('source').value === 'image_pair'){
-          const xrCamNow = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
-          const quat = (xrCamNow && xrCamNow.quaternion) ? xrCamNow.quaternion : camera.quaternion;
-          if(meshL && meshL.userData.isImagePlane) meshL.quaternion.copy(quat);
-          if(meshR && meshR.userData.isImagePlane) meshR.quaternion.copy(quat);
-        } else {
-          if($('autoRotate').checked) fusionGroup.rotation.y += dt * (+$('primSize') || 0.4);
+          show('requestSession 시도: ' + JSON.stringify(opts));
+          session = await navigator.xr.requestSession('immersive-vr', opts);
+          if(session){ show('immersive-vr 세션 획득 성공'); break; }
+        }catch(err){
+          lastErr = err;
+          show('requestSession 실패: ' + (err && err.message ? err.message : String(err)));
         }
+      }
 
-        // per-eye layers 안전 설정
-        const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
-        if(xrCam && xrCam.isArrayCamera && xrCam.cameras && xrCam.cameras.length>=2){
+      if(!session && supportsAR){
+        try{
+          show('immersive-vr 실패 — immersive-ar 시도');
+          session = await navigator.xr.requestSession('immersive-ar', { optionalFeatures:['local-floor'] });
+          show('immersive-ar 세션 획득 성공');
+        }catch(err){
+          lastErr = err;
+          show('immersive-ar 실패: ' + (err && err.message ? err.message : String(err)));
+        }
+      }
+
+      if(!session){
+        show('모든 requestSession 시도 실패. 마지막 에러: ' + (lastErr && lastErr.message ? lastErr.message : String(lastErr)));
+        return;
+      }
+
+      // Attach session to three.js renderer
+      try{
+        await renderer.xr.setSession(session);
+        xrSession = session;
+        lastT = performance.now();
+
+        // animation loop for XR
+        renderer.setAnimationLoop((now)=>{
+          const dt = (now - lastT) / 1000; lastT = now;
+
           try{
-            const p0 = new THREE.Vector3(), p1 = new THREE.Vector3();
-            xrCam.cameras[0].getWorldPosition(p0); xrCam.cameras[1].getWorldPosition(p1);
-            if(p0.x < p1.x){ xrCam.cameras[0].layers.enable(LAYER_L); xrCam.cameras[1].layers.enable(LAYER_R); }
-            else { xrCam.cameras[1].layers.enable(LAYER_L); xrCam.cameras[0].layers.enable(LAYER_R); }
-          }catch(e){ console.warn('XR camera mapping error', e); }
-        }
+            for(const src of xrSession.inputSources){
+              if(!src.gamepad) continue;
+              const g = src.gamepad;
+              const axesY = (g.axes && g.axes.length>=2) ? g.axes[g.axes.length-1] : 0;
+              const dead = 0.18;
+              const y = Math.abs(axesY) > dead ? axesY : 0;
+              if(y){
+                const cur = parseFloat($('distanceMeters').value);
+                const speed = 2.2;
+                const next = Math.min(10, Math.max(1, cur + (-y)*speed*dt));
+                if(Math.abs(next-cur) > 1e-3){ $('distanceMeters').value = next.toFixed(2); applyDistance(next); }
+              }
+            }
+          }catch(e){}
 
-        renderer.render(scene, camera);
-      });
+          if(running) updatePop(dt);
+          if($('source').value === 'image_pair'){
+            const xrCamNow = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : camera;
+            const quat = (xrCamNow && xrCamNow.quaternion) ? xrCamNow.quaternion : camera.quaternion;
+            if(meshL && meshL.userData.isImagePlane) meshL.quaternion.copy(quat);
+            if(meshR && meshR.userData.isImagePlane) meshR.quaternion.copy(quat);
+          } else {
+            if($('autoRotate').checked) fusionGroup.rotation.y += dt * (+$('primSize') || 0.4);
+          }
 
-      xrSession.addEventListener('end', ()=>{ renderer.setAnimationLoop(null); xrSession=null; lastT = performance.now(); dbg('XR session ended'); });
-      dbg('XR session started: OK');
+          // Per-eye layer enforcement (ArrayCamera)
+          const xrCam = renderer.xr.getCamera ? renderer.xr.getCamera(camera) : null;
+          if(xrCam && xrCam.isArrayCamera && xrCam.cameras && xrCam.cameras.length>=2){
+            const leftCam  = xrCam.cameras[0];
+            const rightCam = xrCam.cameras[1];
+            if(leftCam && leftCam.layers) leftCam.layers.set(LAYER_L);
+            if(rightCam && rightCam.layers) rightCam.layers.set(LAYER_R);
+          }
+
+          applyTherapy(dt);
+          renderer.render(scene, camera);
+        });
+
+        session.addEventListener('end', ()=>{ renderer.setAnimationLoop(null); xrSession=null; lastT = performance.now(); show('XR session 종료됨'); });
+        show('XR 세션이 시작되었습니다. HMD에서 프롬프트(권한)가 보이는지 확인하세요.');
+      }catch(err){
+        show('renderer.xr.setSession 중 에러: ' + (err && err.message ? err.message : String(err)));
+        try{ if(session) await session.end(); }catch(e){}
+      }
     }catch(e){
-      console.error('VR 진입 오류:', e);
-      dbg('VR 진입 오류: ' + (e && e.message ? e.message : e));
-      dbg('XR error: ' + (e && e.message ? e.message : e));
+      dbg('enterVR 예외: ' + (e && e.message ? e.message : String(e)));
     }
   });
 
@@ -506,7 +627,6 @@
   // Ensure camera sees both L/R by default
   camera.layers.enable(LAYER_L); camera.layers.enable(LAYER_R);
 
-  // fallback sphere를 stage에 넣어 거리 조절 영향 받도록 구성
   const fallbackGeo = new THREE.SphereGeometry(0.12, 32, 20);
   const fallbackMat = new THREE.MeshStandardMaterial({color:0x8888ff, metalness:0.1, roughness:0.7});
   const fallback = new THREE.Mesh(fallbackGeo, fallbackMat);
@@ -514,20 +634,15 @@
   fallback.userData._isFallback = true;
   stage.add(fallback);
 
-  // 초기 콘텐츠
   buildFusionFromPrimitive('sphere', +$('primSize').value);
-
-  // 초기 거리 적용 (멀리)
   applyDistance(parseFloat($('distanceMeters').value));
 
-  // 초기 1프레임 렌더
-  try{ renderer.render(scene, camera); dbg('Initial frame rendered. If still black, click "Run Diagnostics" and copy the debug output.'); }
+  try{ renderer.render(scene, camera); dbg('Initial frame rendered.'); }
   catch(e){ dbg('Initial render failed: ' + (e && e.message)); console.error(e); }
 
-  // auto-start preview
   running = true; lastT = performance.now(); requestAnimationFrame(renderLoop);
 
-  // ---------- Diagnostics ----------
+  // Diagnostics
   function runRawGLTest(){
     const diag = $('diagCanvas');
     diag.style.display = 'block';
@@ -562,12 +677,9 @@
         };
       }catch(e){ out.push('renderer.getContext() failed: ' + e.message); }
       out.push('GL: ' + JSON.stringify(glInfo));
-
       out.push('three.renderer.info: ' + JSON.stringify(renderer.info));
-
       out.push('camera pos: ' + camera.position.toArray().map(n=>n.toFixed(3)).join(', ') + ' layersMask:' + camera.layers.mask);
       out.push('camera near/far: ' + camera.near + '/' + camera.far + ' fov:' + camera.fov);
-
       out.push('scene.children count: ' + scene.children.length);
       scene.children.forEach((c,i)=>{
         try{
@@ -576,20 +688,17 @@
           out.push(`${i}: ${typ} name=${c.name||''} visible=${c.visible} pos=[${pos}]`);
         }catch(e){}
       });
-
       function meshInfo(m, name){
         if(!m) return `${name}: (null)`;
-        const matType = m.material ? (m.material.type || m.material.constructor && m.material.constructor.name) : 'no-material';
-        const map = (m.material && m.material.map) ? 'hasMap' : 'noMap';
+        const matType = m.material ? (m.material.type || (m.material.constructor && m.material.constructor.name) || 'mat') : 'no-material';
+        const map = (m.material && (m.material.map || (m.material.uniforms && m.material.uniforms.uHasMap && m.material.uniforms.uHasMap.value===1))) ? 'hasMap' : 'noMap';
         return `${name}: pos=${m.position.toArray().map(n=>n.toFixed(3)).join(',')} visible=${m.visible} layers=${m.layers.mask} type=${matType} ${map}`;
       }
       out.push(meshInfo(meshL,'meshL'));
       out.push(meshInfo(meshR,'meshR'));
       out.push('fallback present: ' + (fallback && fallback.parent ? 'yes' : 'no'));
-
       const raw = runRawGLTest();
       out.push('rawGL test: ' + JSON.stringify(raw));
-
       const txt = out.join('\n');
       dbg(txt);
       return txt;
@@ -597,6 +706,17 @@
       dbg('Diagnostics failed: ' + (e && e.message));
       return 'Diagnostics exception: ' + (e && e.message);
     }
+  }
+
+  // Audio
+  let audioCtx = null, audioOn = false;
+  function ensureAudio(){ if(!audioCtx){ const AC = window.AudioContext||window.webkitAudioContext; if(AC) audioCtx = new AC(); } }
+  function beep(ms=120, freq=880){ if(!audioOn) return; ensureAudio(); if(!audioCtx) return; const t0 = audioCtx.currentTime; const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain(); osc.frequency.value = freq; osc.type = 'sine'; gain.gain.setValueAtTime(0.0001, t0); gain.gain.exponentialRampToValueAtTime(0.3, t0+0.01); gain.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000); osc.connect(gain).connect(audioCtx.destination); osc.start(t0); osc.stop(t0 + ms/1000 + 0.05); }
+  $('audioToggle').addEventListener('click', ()=>{ audioOn = !audioOn; $('audioToggle').textContent = (audioOn?'🔔 Audio Cue: On':'🔔 Audio Cue: Off'); if(audioOn) { ensureAudio(); beep(80, 1200); } });
+  $('audioTest').addEventListener('click', ()=>{ ensureAudio(); audioOn = true; $('audioToggle').textContent='🔔 Audio Cue: On'; beep(120, 1000); });
+
+  function onPopStateChange(newState){
+    if($('therapyMode').value==='disparity' && newState==='hold') beep(120, 1000);
   }
 
   window.appDiagnostics = { dump: dumpDiagnostics, runRawGLTest };
